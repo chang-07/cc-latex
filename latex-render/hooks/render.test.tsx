@@ -35,11 +35,12 @@ test('display math draws between the surrounding markdown', async $ => {
   })
   expect(await ui.find({ type: 'Markdown', text: 'Before.' })).toBeDefined()
   expect(await ui.find({ type: 'Markdown', text: 'After.' })).toBeDefined()
-  // Under test there is no process or fs, so the render falls back to a fence
-  // (or, with tools, an Image); either way the formula itself is shown.
+  // The formula is always shown: pending (dim $$ ... $$ while the batch
+  // compiles), failed (a latex fence; under test there is no process or fs),
+  // or rendered (an Image).
   const image = await ui.find({ type: 'Image' })
-  const fence = await ui.find({ type: 'Markdown', text: /```latex/ })
-  expect(image !== undefined || fence !== undefined).toBe(true)
+  const shown = await ui.find({ type: 'Markdown', text: /\\int_0\^1/ })
+  expect(image !== undefined || shown !== undefined).toBe(true)
 })
 
 test('math inside a code fence is not touched', async ($, on) => {

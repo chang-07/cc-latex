@@ -38,9 +38,16 @@ function split(text: string): Piece[] {
   return out
 }
 
-async function sha(text: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
-  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16)
+const hashes = new Map<string, Promise<string>>() // formula source -> cache key
+function sha(text: string): Promise<string> {
+  let p = hashes.get(text)
+  if (!p) {
+    p = crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)).then(buf =>
+      [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16),
+    )
+    hashes.set(text, p)
+  }
+  return p
 }
 
 function pngSize(base64: string): { width: number; height: number } | null {
@@ -51,65 +58,101 @@ function pngSize(base64: string): { width: number; height: number } | null {
 }
 
 type Rendered = { png: string; width: number; height: number }
-const done = new Map<string, Rendered | null>() // settled renders, by hash
-const inflight = new Set<string>()
+const done = new Map<string, Rendered | null>() // settled renders, by key
+const pending = new Map<string, string>() // key -> source, waiting for the next batch
+let batchTimer: ReturnType<typeof setTimeout> | null = null
+let batchRunning = false
+let home: Promise<string> | null = null
 
-// Answers at once: the settled picture, or `undefined` while it renders. A
-// render that settles asks the engine to draw this plugin's sites again.
+function cacheDir($: EngineInterface): Promise<string> {
+  if (!home) home = $.env.get('HOME').then(h => `${h ?? '/tmp'}/.cache/claude-latex`)
+  return home
+}
+
+// Answers at once: the settled picture, or `undefined` while it renders. The
+// formulas of one redraw are compiled together (one tectonic run), and the
+// batch settling asks the engine to draw this plugin's sites again, once.
 function render($: EngineInterface, key: string, src: string): Rendered | null | undefined {
   if (done.has(key)) return done.get(key)
-  if (!inflight.has(key)) {
-    inflight.add(key)
-    void renderOnce($, key, src)
-      .catch(err => {
-        $.ui.log(`latex-render: ${String(err)}`, { to: 'debug' })
-        return null
-      })
-      .then(r => {
-        done.set(key, r)
-        inflight.delete(key)
-        $.ui.invalidate('ui.render')
-      })
-  }
+  if (!pending.has(key)) pending.set(key, src)
+  if (!batchTimer && !batchRunning) batchTimer = setTimeout(() => void runBatch($), 30)
   return undefined
 }
 
-async function cacheDir($: EngineInterface): Promise<string> {
-  const home = (await $.env.get('HOME')) ?? '/tmp'
-  return `${home}/.cache/claude-latex`
+async function runBatch($: EngineInterface): Promise<void> {
+  batchTimer = null
+  if (batchRunning || pending.size === 0) return
+  batchRunning = true
+  const items = [...pending].map(([key, src]) => ({ key, src }))
+  pending.clear()
+  try {
+    const dir = await cacheDir($)
+    const fresh: typeof items = []
+    for (const it of items) (await $.fs.exists(`${dir}/${it.key}.png`)) ? void 0 : fresh.push(it)
+    if (fresh.length > 0) {
+      try {
+        await compile($, dir, fresh)
+      } catch (err) {
+        // One bad formula fails the whole compile: retry them one at a time.
+        $.ui.log(`latex-render: batch failed (${String(err).slice(0, 200)}); retrying singly`, { to: 'debug' })
+        for (const it of fresh) {
+          await compile($, dir, [it]).catch(e => $.ui.log(`latex-render: ${it.key}: ${String(e).slice(0, 200)}`, { to: 'debug' }))
+        }
+      }
+    }
+    for (const it of items) done.set(it.key, await load($, `${dir}/${it.key}.png`))
+  } finally {
+    batchRunning = false
+    $.ui.invalidate('ui.render')
+    if (pending.size > 0) batchTimer = setTimeout(() => void runBatch($), 0)
+  }
 }
 
-async function renderOnce($: EngineInterface, key: string, src: string): Promise<Rendered | null> {
-  const dir = await cacheDir($)
-  const png = `${dir}/${key}.png`
-
-  if (!(await $.fs.exists(png))) {
-    const tex = `${dir}/${key}.tex`
-    await $.fs.write(
-      tex,
-      [
-        '\\documentclass[preview,border=3pt,varwidth=true]{standalone}',
-        '\\usepackage{amsmath,amssymb,amsfonts,xcolor}',
-        '\\begin{document}',
-        `\\color{${TEXT_COLOR}}`,
-        `\\[ ${src} \\]`,
-        '\\end{document}',
-        '',
-      ].join('\n'),
-    )
-    const tect = await $.process.run(['tectonic', '-o', dir, '--chatter', 'minimal', tex], { timeoutMs: 60000 })
-    if (tect.exitCode !== 0) throw new Error(`tectonic: ${tect.stderr.slice(0, 300)}`)
+// One tectonic run for several formulas: each display becomes its own tightly
+// cropped page (the preview package), rasterised to <key>.png.
+async function compile($: EngineInterface, dir: string, items: { key: string; src: string }[]): Promise<void> {
+  const id = items.length === 1 ? items[0]!.key : `batch-${items.map(i => i.key.slice(0, 4)).join('')}`
+  const tex = `${dir}/${id}.tex`
+  await $.fs.write(
+    tex,
+    [
+      '\\documentclass{article}',
+      '\\usepackage{amsmath,amssymb,amsfonts,xcolor}',
+      '\\usepackage[active,tightpage,displaymath]{preview}',
+      '\\setlength\\PreviewBorder{3pt}',
+      '\\begin{document}',
+      `\\color{${TEXT_COLOR}}`,
+      ...items.map(i => `\\[ ${i.src} \\]`),
+      '\\end{document}',
+      '',
+    ].join('\n'),
+  )
+  // --only-cached skips tectonic's per-run bundle check (about 1 s); a fresh
+  // install with nothing cached yet falls back to the fetching run.
+  let tect = await $.process.run(['tectonic', '-o', dir, '--chatter', 'minimal', '--only-cached', tex], { timeoutMs: 60000 })
+  if (tect.exitCode !== 0 && /cache|bundle|network/i.test(tect.stderr)) {
+    tect = await $.process.run(['tectonic', '-o', dir, '--chatter', 'minimal', tex], { timeoutMs: 120000 })
+  }
+  if (tect.exitCode !== 0) throw new Error(`tectonic: ${tect.stderr.slice(0, 300)}`)
+  const pdf = `${dir}/${id}.pdf`
+  for (const [n, it] of items.entries()) {
+    const page = String(n + 1)
     const cairo = await $.process.run(
-      ['pdftocairo', '-png', '-transp', '-r', String(DPI), '-singlefile', `${dir}/${key}.pdf`, `${dir}/${key}`],
+      ['pdftocairo', '-png', '-transp', '-r', String(DPI), '-f', page, '-l', page, '-singlefile', pdf, `${dir}/${it.key}`],
       { timeoutMs: 30000 },
     )
     if (cairo.exitCode !== 0) throw new Error(`pdftocairo: ${cairo.stderr.slice(0, 300)}`)
   }
+}
 
-  const { base64 } = await $.fs.read(png, { as: 'bytes' })
-  const size = pngSize(base64)
-  if (!size) throw new Error('not a PNG')
-  return { png: base64, ...size }
+async function load($: EngineInterface, png: string): Promise<Rendered | null> {
+  try {
+    const { base64 } = await $.fs.read(png, { as: 'bytes' })
+    const size = pngSize(base64)
+    return size ? { png: base64, ...size } : null
+  } catch {
+    return null
+  }
 }
 
 // The terminal's cell size in pixels, as cc-tmux-bridge measures it and leaves
