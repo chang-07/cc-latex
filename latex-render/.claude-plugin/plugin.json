@@ -1,0 +1,5 @@
+{
+  "name": "latex-render",
+  "version": "0.1.0",
+  "description": "Draws display LaTeX ($$...$$ or \\[...\\]) in assistant replies as typeset images (tectonic + kitty graphics)"
+}
