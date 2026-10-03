@@ -1,2 +1,4 @@
 .claude-plugin/types/
 .DS_Store
+__pycache__/
+*.profraw
