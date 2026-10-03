@@ -1,14 +1,16 @@
 import type { Register, EngineInterface } from 'claude-code'
 
 // Display math in an assistant reply ($$...$$ or \[...\]) is typeset with
-// tectonic, rasterised with pdftocairo, and drawn inline as an Image (kitty
-// graphics: Ghostty, kitty; tmux needs `allow-passthrough on`). Inline $...$
-// is left as text. Elsewhere (no Image element, a render failure) the engine
-// draws the reply as usual.
+// tectonic, rasterised with pdftocairo, and drawn inline as an Image over the
+// kitty graphics protocol (Ghostty, kitty). Inline $...$ is left as text.
+//
+// Inside tmux the engine's image upload does not reach the terminal unless
+// Claude Code runs under scripts/cc-tmux-bridge.py (which sets
+// CC_TMUX_BRIDGE=1); without the bridge, formulas are shown as LaTeX source.
 
 const DPI = 600 // rasterisation; the picture is scaled to its cell box, so keep this above the screen's pixels per point
 const PT_PER_ROW = 8 // points of typeset height per terminal row; lower = bigger
-const CELL_ASPECT = 2.1 // cell height / cell width
+const CELL_ASPECT = 2.1 // cell height / cell width, used when no measured size is available
 const TEXT_COLOR = 'white' // the terminal is dark; change for a light theme
 
 type Piece = { kind: 'md'; text: string } | { kind: 'tex'; src: string }
@@ -48,7 +50,7 @@ function pngSize(base64: string): { width: number; height: number } | null {
   return { width: v.getUint32(16), height: v.getUint32(20) }
 }
 
-type Rendered = { file: string; png: string; width: number; height: number }
+type Rendered = { png: string; width: number; height: number }
 const done = new Map<string, Rendered | null>() // settled renders, by hash
 const inflight = new Set<string>()
 
@@ -72,9 +74,13 @@ function render($: EngineInterface, key: string, src: string): Rendered | null |
   return undefined
 }
 
-async function renderOnce($: EngineInterface, key: string, src: string): Promise<Rendered | null> {
+async function cacheDir($: EngineInterface): Promise<string> {
   const home = (await $.env.get('HOME')) ?? '/tmp'
-  const dir = `${home}/.cache/claude-latex`
+  return `${home}/.cache/claude-latex`
+}
+
+async function renderOnce($: EngineInterface, key: string, src: string): Promise<Rendered | null> {
+  const dir = await cacheDir($)
   const png = `${dir}/${key}.png`
 
   if (!(await $.fs.exists(png))) {
@@ -103,12 +109,29 @@ async function renderOnce($: EngineInterface, key: string, src: string): Promise
   const { base64 } = await $.fs.read(png, { as: 'bytes' })
   const size = pngSize(base64)
   if (!size) throw new Error('not a PNG')
-  return { file: png, png: base64, ...size }
+  return { png: base64, ...size }
 }
 
-function cells(r: Rendered, maxColumns: number): { columns: number; rows: number } {
+// The terminal's cell size in pixels, as cc-tmux-bridge measures it and leaves
+// in ~/.cache/cc-tmux-bridge.cellsize ("<width> <height>"); CELL_ASPECT else.
+let cellAspect: Promise<number> | null = null
+function measuredCellAspect($: EngineInterface): Promise<number> {
+  if (!cellAspect) {
+    cellAspect = (async () => {
+      try {
+        const home = (await $.env.get('HOME')) ?? ''
+        const [w, h] = (await $.fs.read(`${home}/.cache/cc-tmux-bridge.cellsize`)).trim().split(/\s+/).map(Number)
+        if (w! > 0 && h! > 0) return h! / w!
+      } catch {}
+      return CELL_ASPECT
+    })()
+  }
+  return cellAspect
+}
+
+function cells(r: Rendered, maxColumns: number, aspectRatio: number): { columns: number; rows: number } {
   const heightPt = (r.height * 72) / DPI
-  const aspect = (r.width / r.height) * CELL_ASPECT // columns per row
+  const aspect = (r.width / r.height) * aspectRatio // columns per row
   let rows = Math.max(1, Math.round(heightPt / PT_PER_ROW))
   let columns = Math.max(1, Math.round(rows * aspect))
   if (columns > maxColumns) {
@@ -125,7 +148,10 @@ export const register: Register = on => {
     if (!pieces.some(p => p.kind === 'tex')) return next(e)
 
     const { Box, Text, Markdown, Image } = $.ui.resolve(e)
-    const maxColumns = Math.max(10, (e.viewport?.columns ?? 80) - 4)
+    const maxColumns = Math.min(255, Math.max(10, (e.viewport?.columns ?? 80) - 4))
+    const bridged = await $.env.get('CC_TMUX_BRIDGE').then(Boolean, () => false)
+    const inTmux = !bridged && (await $.env.get('TMUX').then(Boolean, () => false))
+    const aspectRatio = await measuredCellAspect($)
 
     const keys = await Promise.all(pieces.map(p => (p.kind === 'tex' ? sha(p.src) : '')))
     const nodes = pieces.map((p, i) => {
@@ -133,10 +159,11 @@ export const register: Register = on => {
         const text = p.text.replace(/^\n+|\n+$/g, '')
         return text ? <Markdown text={text.slice(0, 10000)} /> : null
       }
+      if (inTmux) return <Markdown text={'```latex\n' + p.src + '\n```'} />
       const r = render($, keys[i]!, p.src)
       if (r === undefined) return <Markdown text={'$$ ' + p.src + ' $$'} dimColor />
       if (r === null) return <Markdown text={'```latex\n' + p.src + '\n```'} />
-      const { columns, rows } = cells(r, maxColumns)
+      const { columns, rows } = cells(r, maxColumns, aspectRatio)
       return (
         <Box marginLeft={2} marginTop={1} marginBottom={1}>
           <Image source={{ png: r.png }} columns={columns} rows={rows} alt={p.src} />
