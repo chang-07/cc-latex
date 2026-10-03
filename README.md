@@ -45,7 +45,7 @@ Constants at the top of `hooks/register.tsx`:
 | `PT_PER_ROW` | `8` | Points of typeset height per terminal row. Lower = bigger. |
 | `CELL_ASPECT` | `2.1` | Cell height / width of your terminal font. |
 | `TEXT_COLOR` | `white` | Formula colour; use `black` on a light theme. |
-| `DPI` | `200` | Rasterisation resolution. |
+| `DPI` | `600` | Rasterisation resolution; keep high, the picture is scaled to its cell box. |
 
 ## Development
 

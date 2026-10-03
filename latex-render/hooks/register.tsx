@@ -6,7 +6,7 @@ import type { Register, EngineInterface } from 'claude-code'
 // is left as text. Elsewhere (no Image element, a render failure) the engine
 // draws the reply as usual.
 
-const DPI = 200
+const DPI = 600 // rasterisation; the picture is scaled to its cell box, so keep this above the screen's pixels per point
 const PT_PER_ROW = 8 // points of typeset height per terminal row; lower = bigger
 const CELL_ASPECT = 2.1 // cell height / cell width
 const TEXT_COLOR = 'white' // the terminal is dark; change for a light theme
