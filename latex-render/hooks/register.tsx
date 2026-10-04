@@ -8,7 +8,7 @@ import type { Register, EngineInterface } from 'claude-code'
 // Claude Code runs under scripts/cc-tmux-bridge.py (which sets
 // CC_TMUX_BRIDGE=1); without the bridge, formulas are shown as LaTeX source.
 
-const DPI = 600 // rasterisation; the picture is scaled to its cell box, so keep this above the screen's pixels per point
+const DPI = 400 // rasterisation; above the screen's pixels per point, but every formula is held decoded by the terminal
 const PT_PER_ROW = 8 // points of typeset height per terminal row; lower = bigger
 const CELL_ASPECT = 2.1 // cell height / cell width, used when no measured size is available
 const TEXT_COLOR = 'white' // the terminal is dark; change for a light theme
@@ -129,22 +129,32 @@ async function compile($: EngineInterface, dir: string, items: { key: string; sr
       '',
     ].join('\n'),
   )
-  // --only-cached skips tectonic's per-run bundle check (about 1 s); a fresh
-  // install with nothing cached yet falls back to the fetching run.
-  let tect = await $.process.run(['tectonic', '-o', dir, '--chatter', 'minimal', '--only-cached', tex], { timeoutMs: 60000 })
-  if (tect.exitCode !== 0 && /cache|bundle|network/i.test(tect.stderr)) {
+  // Even with --only-cached, tectonic contacts the bundle server on every run
+  // and waits on it (seconds on a slow link, with almost no CPU used). Pointing
+  // its proxy at a closed local port makes that attempt fail at once, so the
+  // compile runs from the cache in well under a second. A package not cached
+  // yet makes this run fail, and the fallback compiles with the network open.
+  const offline = { https_proxy: 'http://127.0.0.1:9', http_proxy: 'http://127.0.0.1:9', HTTPS_PROXY: 'http://127.0.0.1:9', HTTP_PROXY: 'http://127.0.0.1:9' }
+  // tectonic reruns TeX when the .aux changes, and a first pass always writes
+  // one. Writing the two lines it would produce skips that second pass.
+  await $.fs.write(`${dir}/${id}.aux`, `\\relax \n\\gdef \\@abspage@last{${items.length}}\n`)
+  let tect = await $.process.run(['tectonic', '-o', dir, '--chatter', 'minimal', '--only-cached', tex], { env: offline, timeoutMs: 60000 })
+  if (tect.exitCode !== 0) {
     tect = await $.process.run(['tectonic', '-o', dir, '--chatter', 'minimal', tex], { timeoutMs: 120000 })
   }
   if (tect.exitCode !== 0) throw new Error(`tectonic: ${tect.stderr.slice(0, 300)}`)
+  // One pdftocairo run for every page (it names them <prefix>-<n>.png, n
+  // zero-padded to the digits of the page count), then each page is moved to
+  // its formula's cache name; one process instead of one per formula.
   const pdf = `${dir}/${id}.pdf`
-  for (const [n, it] of items.entries()) {
-    const page = String(n + 1)
-    const cairo = await $.process.run(
-      ['pdftocairo', '-png', '-transp', '-r', String(DPI), '-f', page, '-l', page, '-singlefile', pdf, `${dir}/${it.key}`],
-      { timeoutMs: 30000 },
-    )
-    if (cairo.exitCode !== 0) throw new Error(`pdftocairo: ${cairo.stderr.slice(0, 300)}`)
-  }
+  const prefix = `${dir}/${id}`
+  const width = String(items.length).length
+  const moves = items.map((it, n) => `mv "${prefix}-${String(n + 1).padStart(width, '0')}.png" "${dir}/${it.key}.png"`).join(' && ')
+  const cairo = await $.process.run(
+    ['sh', '-c', `pdftocairo -png -transp -r ${DPI} "${pdf}" "${prefix}" && ${moves}`],
+    { timeoutMs: 30000 },
+  )
+  if (cairo.exitCode !== 0) throw new Error(`pdftocairo: ${cairo.stderr.slice(0, 300)}`)
 }
 
 async function load($: EngineInterface, png: string): Promise<Rendered | null> {
