@@ -120,8 +120,10 @@ async function compile($: EngineInterface, dir: string, items: { key: string; sr
       '\\usepackage{amsmath,amssymb,amsfonts,xcolor}',
       '\\usepackage[active,tightpage,displaymath]{preview}',
       '\\setlength\\PreviewBorder{3pt}',
+      // preview typesets each display in its own group, so a document-level
+      // \color never reaches it: set the colour at the start of every display.
+      `\\everydisplay{\\color{${TEXT_COLOR}}}`,
       '\\begin{document}',
-      `\\color{${TEXT_COLOR}}`,
       ...items.map(i => `\\[ ${i.src} \\]`),
       '\\end{document}',
       '',
