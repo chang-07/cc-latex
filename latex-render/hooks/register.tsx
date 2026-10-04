@@ -75,7 +75,9 @@ function cacheDir($: EngineInterface): Promise<string> {
 function render($: EngineInterface, key: string, src: string): Rendered | null | undefined {
   if (done.has(key)) return done.get(key)
   if (!pending.has(key)) pending.set(key, src)
-  if (!batchTimer && !batchRunning) batchTimer = setTimeout(() => void runBatch($), 30)
+  // Every formula of a redraw is registered within the same hook call, so the
+  // window only has to outlast the current tick.
+  if (!batchTimer && !batchRunning) batchTimer = setTimeout(() => void runBatch($), 10)
   return undefined
 }
 
