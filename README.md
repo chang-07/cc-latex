@@ -38,14 +38,20 @@ passthrough envelope so it reaches the real terminal. Claude Code already uses
 kitty's Unicode-placeholder mode under tmux, so no other change is needed.
 
 ```sh
-tmux set -g allow-passthrough on        # also put this in ~/.tmux.conf
+tmux set -g allow-passthrough all       # also put this in ~/.tmux.conf
 python3 ~/code/cc-latex/scripts/cc-tmux-bridge.py claude --plugin-dir ~/code/cc-latex/latex-render
 ```
 
 The bridge also answers Claude Code's image probe (no env flag needed),
-measures the terminal's cell size so formulas are sized exactly, and triggers
-a tmux redraw after each image to clear pixels the terminal may keep on
-overwritten cells.
+measures the terminal's cell size so formulas are sized exactly, redraws tmux
+once output goes quiet after an image, and keeps the terminal's image store
+healthy: Claude Code deletes and re-uploads every image on each redraw, which
+the bridge collapses to one upload per formula, and it evicts the oldest
+images past `CC_TMUX_BRIDGE_MAX_IMAGES` (default 24) so the terminal never
+hits its storage limit and starts refusing uploads silently. If formulas ever
+stop appearing, a stuck store is the first suspect: send Ghostty
+`printf '\033Ptmux;\033\033_Ga=d,d=A\033\033\\\033\\' > $(tmux display -p '#{pane_tty}')`
+to clear it.
 
 To make it automatic, put a `claude` wrapper earlier in `PATH` than the real
 launcher that runs the bridge when `$TMUX` is set:

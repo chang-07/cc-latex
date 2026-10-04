@@ -62,12 +62,13 @@ DIACRITICS = [chr(c) for a, b in _RANGES for c in range(a, b + 1)]
 MAX_CELLS = len(DIACRITICS)
 
 LOG = os.environ.get("CC_TMUX_BRIDGE_LOG", os.path.expanduser("~/.cache/cc-tmux-bridge.log"))
+DUMP = os.environ.get("CC_TMUX_BRIDGE_DUMP")  # a path: raw child output goes to <path>.in, forwarded bytes to <path>.out
 
 
 def log(msg: str) -> None:
     if LOG:
         with open(LOG, "a") as f:
-            f.write(msg + "\n")
+            f.write(f"[{os.getpid()}] {msg}\n")
 
 
 def tmux_wrap(seq: bytes) -> bytes:
@@ -85,6 +86,11 @@ def parse_ctrl(ctrl: bytes) -> dict:
 
 def fmt_ctrl(d: dict) -> bytes:
     return ",".join(f"{k}={v}" for k, v in d.items()).encode()
+
+
+PLACEHOLDER_UTF8 = PLACEHOLDER.encode()
+SGR_ID = re.compile(rb"\x1b\[38;(?:5;(\d+)|2;(\d+);(\d+);(\d+))m(?=\xf4\x8e\xbb\xae)")
+SGR_TAIL = re.compile(rb"\x1b\[38;(?:5;\d*|2;\d*;?\d*;?\d*)m?(?:\xf4(?:\x8e(?:\xbb)?)?)?$")
 
 
 def png_size(payload_b64: bytes):
@@ -105,10 +111,30 @@ class Bridge:
         self.buf = b""
         self.next_id = 1000  # ids the bridge mints when the child names none
         self.in_chunks = False  # inside an m=1 chunked transmission
+        self.skip_chunks = False  # the transmission in progress is a duplicate: drop its chunks
+        # A chunked upload is coalesced into one command: kitty's chunking is
+        # stateful in the terminal (a transmission stays open until its last
+        # chunk), so chunks from two sessions interleaving through tmux, or a
+        # transmission cut short, leave the terminal stuck mid-upload and it
+        # swallows every graphics command after. One command per image has no
+        # such state.
+        self.tx_ctrl = None  # the first chunk's control data, while coalescing
+        self.tx_payload = []
+        self.tx_log = ""
+        self.uploaded = {}  # image id -> key of the payload the terminal already holds (insertion = recency)
+        # kitty image ids are global to the terminal, and every Claude Code
+        # process numbers its images from 1: two bridged sessions in one
+        # window would overwrite and delete each other's pictures. Each bridge
+        # moves its child's ids into a range of its own (24-bit, so the id
+        # still fits a placeholder cell's foreground colour).
+        self.id_base = ((os.getpid() % 16000) + 1) * 1000
+        self.hold = b""  # a trailing SGR that may be followed by a placeholder in the next read
+        self.max_images = int(os.environ.get("CC_TMUX_BRIDGE_MAX_IMAGES", "24"))
         self.cell = None  # (width_px, height_px) once measured
         self.pane_width = self.tmux_pane_width()
         self.client = self.tmux_client()
         self.refresh_timer = None
+        self.refresh_wanted = False
         self.load_cellsize()
 
     # -- tmux helpers ------------------------------------------------------
@@ -128,19 +154,28 @@ class Bridge:
         return self.tmux("display", "-p", "-t", os.environ.get("TMUX_PANE", ""), "#{client_name}")
 
     def schedule_refresh(self) -> None:
-        """Redraw the tmux client a little after the last placement: the
-        terminal may keep painting an image over cells tmux has overwritten
-        (e.g. once the streaming area scrolls up), and a full redraw clears it."""
-        if not self.client:
+        """Redraw the tmux client once the child's output goes quiet after a
+        placement, and once more a second later as a safety net. The terminal
+        can keep an image's pixels on cells tmux has since moved or overwritten
+        (the reply's rows shift as its layout settles), and a full redraw
+        reconciles them. Quiet output is the earliest moment that is settled."""
+        self.refresh_wanted = True
+        self.arm_idle_refresh()
+
+    def arm_idle_refresh(self) -> None:
+        if not self.client or not self.refresh_wanted:
             return
         if self.refresh_timer:
             self.refresh_timer.cancel()
 
         def go():
-            for delay in (0.0, 1.5, 4.0):
-                threading.Timer(delay, lambda: self.tmux("refresh-client", "-t", self.client)).start()
+            self.refresh_wanted = False
+            self.tmux("refresh-client", "-t", self.client)
+            t = threading.Timer(1.0, lambda: self.tmux("refresh-client", "-t", self.client))
+            t.daemon = True
+            t.start()
 
-        self.refresh_timer = threading.Timer(0.4, go)
+        self.refresh_timer = threading.Timer(0.15, go)
         self.refresh_timer.daemon = True
         self.refresh_timer.start()
 
@@ -180,8 +215,26 @@ class Bridge:
         return self.recent[-120:]
 
     def feed(self, data: bytes) -> bytes:
+        if DUMP:
+            with open(DUMP + ".in", "ab") as f:
+                f.write(data)
+        out = self.hold + self._feed(data)
+        self.hold = b""
+        m = SGR_TAIL.search(out)
+        if m:
+            self.hold = out[m.start():]
+            out = out[: m.start()]
+        out = self.recolor(out)
+        if DUMP:
+            with open(DUMP + ".out", "ab") as f:
+                f.write(out)
+        return out
+
+    def _feed(self, data: bytes) -> bytes:
         self.recent = (getattr(self, "recent", b"") + data)[-4096:]
         self.buf += data
+        if self.refresh_wanted:
+            self.arm_idle_refresh()
         out = []
         while True:
             i = self.buf.find(APC_START)
@@ -207,15 +260,39 @@ class Bridge:
             out.append(self.graphics(body))
         return b"".join(out)
 
+    def map_id(self, ident: str) -> str:
+        return str(self.id_base + int(ident)) if ident.isdigit() else ident
+
+    def recolor(self, text: bytes) -> bytes:
+        """Moves the image id a placeholder cell carries in its foreground
+        colour into this bridge's id range (as a 24-bit colour); one pass, so
+        a remapped colour is never remapped again."""
+        def sub(m):
+            if m.group(1) is not None:
+                ident = int(m.group(1))
+            else:
+                ident = (int(m.group(2)) << 16) | (int(m.group(3)) << 8) | int(m.group(4))
+            ident = self.id_base + ident
+            return b"\x1b[38;2;%d;%d;%dm" % ((ident >> 16) & 255, (ident >> 8) & 255, ident & 255)
+        return SGR_ID.sub(sub, text)
+
     def graphics(self, body: bytes) -> bytes:
         ctrl_b, _, payload = body.partition(b";")
         ctrl = parse_ctrl(ctrl_b)
+        if "i" in ctrl and ctrl.get("a") != "q":
+            ctrl["i"] = self.map_id(ctrl["i"])
 
         # Continuation chunk of a chunked transmission: wrap and forward.
         if self.in_chunks and "a" not in ctrl:
             self.in_chunks = ctrl.get("m") == "1"
-            ctrl.setdefault("q", "2")
-            return tmux_wrap(APC_START + fmt_ctrl(ctrl) + b";" + payload + ST)
+            if self.skip_chunks:
+                if not self.in_chunks:
+                    self.skip_chunks = False
+                return b""
+            self.tx_payload.append(payload)
+            if self.in_chunks:
+                return b""
+            return self.flush_transmission()
 
         action = ctrl.get("a", "t")
 
@@ -234,12 +311,64 @@ class Bridge:
             ctrl.setdefault("U", "1")
             ctrl.setdefault("q", "2")
             self.in_chunks = ctrl.get("m") == "1"
-            log(f"placement id={ctrl.get('i')} {ctrl.get('c')}x{ctrl.get('r')} chunked={self.in_chunks}")
+            ident = ctrl.get("i")
+            # The engine re-uploads every image on each redraw. The terminal
+            # already holds it, so a repeat of the same payload under the same
+            # id is dropped, continuation chunks included.
+            key = (ctrl.get("c"), ctrl.get("r"), ctrl.get("f"), payload[:4096])
+            if ident and self.uploaded.get(ident) == key:
+                self.skip_chunks = self.in_chunks
+                log(f"placement id={ident} {ctrl.get('c')}x{ctrl.get('r')} duplicate, dropped")
+                return b""
+            evict = b""
+            if ident:
+                self.uploaded.pop(ident, None)
+                self.uploaded[ident] = key
+                # The terminal's image store is finite (Ghostty refuses new
+                # uploads once full, silently). Keep the newest images and
+                # delete the oldest from the terminal ourselves.
+                while len(self.uploaded) > self.max_images:
+                    old = next(iter(self.uploaded))
+                    del self.uploaded[old]
+                    evict += tmux_wrap(APC_START + f"a=d,d=I,i={old},q=2".encode() + ST)
+                    log(f"evicted image id={old}")
+            self.tx_log = f"placement id={ident} {ctrl.get('c')}x{ctrl.get('r')}"
+            if self.in_chunks:
+                ctrl.pop("m", None)
+                self.tx_ctrl = ctrl
+                self.tx_payload = [payload]
+                return evict
+            log(self.tx_log)
             self.schedule_refresh()
-            return tmux_wrap(APC_START + fmt_ctrl(ctrl) + b";" + payload + ST)
+            return evict + tmux_wrap(APC_START + fmt_ctrl(ctrl) + b";" + payload + ST)
+
+        if action == "d":
+            # The engine deletes images it thinks are off screen and re-uploads
+            # them later; between the two the placeholders are blank, and a
+            # cycle that ends on the delete leaves a formula blank for good.
+            # Images are small, so keep every one the terminal has.
+            log(f"delete dropped: {ctrl}")
+            return b""
 
         self.in_chunks = ctrl.get("m") == "1"
         ctrl.setdefault("q", "2")
+        if self.in_chunks:
+            ctrl.pop("m", None)
+            self.tx_ctrl = ctrl
+            self.tx_payload = [payload]
+            self.tx_log = f"transmit {ctrl.get('a')} id={ctrl.get('i')}"
+            return b""
+        return tmux_wrap(APC_START + fmt_ctrl(ctrl) + b";" + payload + ST)
+
+    def flush_transmission(self) -> bytes:
+        """The coalesced upload as one command (no m= key, so the terminal
+        never enters chunked state)."""
+        ctrl, payload = self.tx_ctrl, b"".join(self.tx_payload)
+        self.tx_ctrl, self.tx_payload = None, []
+        if ctrl is None:
+            return b""
+        log(f"{self.tx_log} coalesced {len(payload)} bytes")
+        self.schedule_refresh()
         return tmux_wrap(APC_START + fmt_ctrl(ctrl) + b";" + payload + ST)
 
 
