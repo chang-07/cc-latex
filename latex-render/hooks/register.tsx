@@ -15,14 +15,16 @@ const TEXT_COLOR = 'white' // the terminal is dark; change for a light theme
 
 type Piece = { kind: 'md'; text: string } | { kind: 'tex'; src: string }
 
-const FENCE = /(```[\s\S]*?```|~~~[\s\S]*?~~~)/
+// Fenced blocks and inline code spans are skipped: a `$$` quoted in prose
+// must not pair with a real delimiter.
+const FENCE = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/
 const DISPLAY = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]/g
 
 function split(text: string): Piece[] {
   const out: Piece[] = []
   for (const chunk of text.split(FENCE)) {
     if (!chunk) continue
-    if (chunk.startsWith('```') || chunk.startsWith('~~~')) {
+    if (chunk.startsWith('```') || chunk.startsWith('~~~') || chunk.startsWith('`')) {
       out.push({ kind: 'md', text: chunk })
       continue
     }
@@ -155,7 +157,9 @@ async function compile($: EngineInterface, dir: string, items: { key: string; sr
   // pixels re-saved by any other encoder draw right), so each page is re-saved
   // by sips on the way to its cache name; alpha survives.
   const moves = items
-    .map((it, n) => `sips -s format png "${prefix}-${String(n + 1).padStart(width, '0')}.png" --out "${dir}/${it.key}.png" >/dev/null`)
+    // -Z 4096 downsamples only when a side exceeds it: the engine refuses a
+    // larger Image, and with it the whole message's tree.
+    .map((it, n) => `sips -Z 4096 -s format png "${prefix}-${String(n + 1).padStart(width, '0')}.png" --out "${dir}/${it.key}.png" >/dev/null`)
     .join(' && ')
   const cairo = await $.process.run(
     ['sh', '-c', `pdftocairo -png -transp -r ${DPI} "${pdf}" "${prefix}" && ${moves} && rm -f "${prefix}"-*.png`],
