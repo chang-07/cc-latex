@@ -120,13 +120,13 @@ async function compile($: EngineInterface, dir: string, items: { key: string; sr
     [
       '\\documentclass{article}',
       '\\usepackage{amsmath,amssymb,amsfonts,xcolor}',
-      '\\usepackage[active,tightpage,displaymath]{preview}',
+      // Each formula is its own tight preview box around displaystyle math. (The
+      // package's displaymath extraction keeps the display's whole line, which
+      // leaves the formula centred in a canvas of transparent space.)
+      '\\usepackage[active,tightpage]{preview}',
       '\\setlength\\PreviewBorder{3pt}',
-      // preview typesets each display in its own group, so a document-level
-      // \color never reaches it: set the colour at the start of every display.
-      `\\everydisplay{\\color{${TEXT_COLOR}}}`,
       '\\begin{document}',
-      ...items.map(i => `\\[ ${i.src} \\]`),
+      ...items.map(i => `\\begin{preview}\\color{${TEXT_COLOR}}\\(\\displaystyle ${i.src} \\)\\end{preview}`),
       '\\end{document}',
       '',
     ].join('\n'),
@@ -151,9 +151,14 @@ async function compile($: EngineInterface, dir: string, items: { key: string; sr
   const pdf = `${dir}/${id}.pdf`
   const prefix = `${dir}/${id}`
   const width = String(items.length).length
-  const moves = items.map((it, n) => `mv "${prefix}-${String(n + 1).padStart(width, '0')}.png" "${dir}/${it.key}.png"`).join(' && ')
+  // Ghostty draws cairo's PNG byte stream at a fraction of its size (the same
+  // pixels re-saved by any other encoder draw right), so each page is re-saved
+  // by sips on the way to its cache name; alpha survives.
+  const moves = items
+    .map((it, n) => `sips -s format png "${prefix}-${String(n + 1).padStart(width, '0')}.png" --out "${dir}/${it.key}.png" >/dev/null`)
+    .join(' && ')
   const cairo = await $.process.run(
-    ['sh', '-c', `pdftocairo -png -transp -r ${DPI} "${pdf}" "${prefix}" && ${moves}`],
+    ['sh', '-c', `pdftocairo -png -transp -r ${DPI} "${pdf}" "${prefix}" && ${moves} && rm -f "${prefix}"-*.png`],
     { timeoutMs: 30000 },
   )
   if (cairo.exitCode !== 0) throw new Error(`pdftocairo: ${cairo.stderr.slice(0, 300)}`)
@@ -190,7 +195,9 @@ function cells(r: Rendered, maxColumns: number, aspectRatio: number): { columns:
   const heightPt = (r.height * 72) / DPI
   const aspect = (r.width / r.height) * aspectRatio // columns per row
   let rows = Math.max(1, Math.round(heightPt / PT_PER_ROW))
-  let columns = Math.max(1, Math.round(rows * aspect))
+  // Err a little wide: the bridge trims the box to the picture's exact shape
+  // (it can only shrink it), and a box too narrow would shrink the picture.
+  let columns = Math.max(1, Math.ceil(rows * aspect * 1.04))
   if (columns > maxColumns) {
     columns = maxColumns
     rows = Math.max(1, Math.round(columns / aspect))
