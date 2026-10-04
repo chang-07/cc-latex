@@ -32,6 +32,7 @@ import subprocess
 import sys
 import termios
 import threading
+import time
 import tty
 
 ESC = b"\x1b"
@@ -68,7 +69,7 @@ DUMP = os.environ.get("CC_TMUX_BRIDGE_DUMP")  # a path: raw child output goes to
 def log(msg: str) -> None:
     if LOG:
         with open(LOG, "a") as f:
-            f.write(f"[{os.getpid()}] {msg}\n")
+            f.write(f"{time.strftime('%H:%M:%S')}.{int(time.time() * 1000) % 1000:03d} [{os.getpid()}] {msg}\n")
 
 
 def tmux_wrap(seq: bytes) -> bytes:
