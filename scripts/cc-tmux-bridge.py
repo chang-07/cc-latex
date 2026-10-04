@@ -321,7 +321,24 @@ class Bridge:
                 log(f"placement id={ident} {ctrl.get('c')}x{ctrl.get('r')} duplicate, dropped")
                 return b""
             evict = b""
+            # Trim the box to the picture's shape: the terminal centres a picture
+            # in a box wider than it. Only ever narrower (the placeholder grid
+            # the engine printed is `c` wide; cells past the trimmed width stay
+            # empty, but a wider box than the grid would be cropped).
+            cols = int(ctrl.get("c", "0") or 0)
+            rows = int(ctrl.get("r", "0") or 0)
+            fit = self.fit_columns(ctrl, payload, rows)
+            if fit and cols and fit < cols:
+                ctrl["c"] = str(fit)
+                log(f"box {cols}x{rows} trimmed to {fit}x{rows}")
             if ident:
+                # The engine reuses ids; the terminal keeps the old virtual
+                # placement's box when an id is re-transmitted, and fits the new
+                # picture into it. Delete the old image first so the new box
+                # applies.
+                if ident in self.uploaded:
+                    evict += tmux_wrap(APC_START + f"a=d,d=I,i={ident},q=2".encode() + ST)
+                    log(f"replaced image id={ident}: old placement deleted")
                 self.uploaded.pop(ident, None)
                 self.uploaded[ident] = key
                 # The terminal's image store is finite (Ghostty refuses new
@@ -359,6 +376,18 @@ class Bridge:
             self.tx_log = f"transmit {ctrl.get('a')} id={ctrl.get('i')}"
             return b""
         return tmux_wrap(APC_START + fmt_ctrl(ctrl) + b";" + payload + ST)
+
+    def fit_columns(self, ctrl: dict, payload: bytes, rows: int):
+        """Columns that give the box the picture's own shape at `rows` tall,
+        from the PNG header and this window's measured cell size."""
+        if rows <= 0 or not self.cell or ctrl.get("f") != "100" or ctrl.get("t", "d") != "d":
+            return None
+        size = png_size(payload)
+        if not size:
+            return None
+        w, h = size
+        cw, ch = self.cell
+        return max(1, round(w / h * rows * ch / cw))
 
     def flush_transmission(self) -> bytes:
         """The coalesced upload as one command (no m= key, so the terminal
