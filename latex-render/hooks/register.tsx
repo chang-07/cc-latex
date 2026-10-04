@@ -157,9 +157,12 @@ async function compile($: EngineInterface, dir: string, items: { key: string; sr
   // pixels re-saved by any other encoder draw right), so each page is re-saved
   // by sips on the way to its cache name; alpha survives.
   const moves = items
-    // -Z 4096 downsamples only when a side exceeds it: the engine refuses a
-    // larger Image, and with it the whole message's tree.
-    .map((it, n) => `sips -Z 4096 -s format png "${prefix}-${String(n + 1).padStart(width, '0')}.png" --out "${dir}/${it.key}.png" >/dev/null`)
+    // A page wider than 4096 px is downsampled first (never enlarged): the
+    // engine refuses a larger Image, and with it the whole message's tree.
+    .map((it, n) => {
+      const page = `${prefix}-${String(n + 1).padStart(width, '0')}.png`
+      return `w=$(sips -g pixelWidth "${page}" | awk '/pixelWidth/{print $2}'); if [ "$w" -gt 4096 ]; then sips --resampleWidth 4096 "${page}" >/dev/null; fi; sips -s format png "${page}" --out "${dir}/${it.key}.png" >/dev/null`
+    })
     .join(' && ')
   const cairo = await $.process.run(
     ['sh', '-c', `pdftocairo -png -transp -r ${DPI} "${pdf}" "${prefix}" && ${moves} && rm -f "${prefix}"-*.png`],
