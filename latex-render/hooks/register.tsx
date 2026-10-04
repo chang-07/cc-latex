@@ -213,29 +213,6 @@ function cells(r: Rendered, maxColumns: number, aspectRatio: number): { columns:
 }
 
 export const register: Register = on => {
-  // The engine draws the streaming reply itself and raises AssistantMessage
-  // only for committed blocks, so the first chance to draw a picture is when
-  // its block is committed. Watching the model's text as it streams lets the
-  // compile start the moment a formula closes, so the picture is ready then.
-  on('turn.step', async function* ($, e, next) {
-    const blocks = new Map<number, string>()
-    const started = new Set<string>()
-    for await (const chunk of next(e)) {
-      if (chunk.kind === 'text') {
-        const text = (blocks.get(chunk.index) ?? '') + chunk.text
-        blocks.set(chunk.index, text)
-        if (chunk.text.includes('$') || chunk.text.includes(']')) {
-          for (const piece of split(text)) {
-            if (piece.kind !== 'tex' || started.has(piece.src)) continue
-            started.add(piece.src)
-            void sha(piece.src).then(key => void render($, key, piece.src))
-          }
-        }
-      }
-      yield chunk
-    }
-  })
-
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     if (e.surface !== 'terminal') return next(e)
     const pieces = split(e.props.text)
