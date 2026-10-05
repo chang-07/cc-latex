@@ -100,9 +100,8 @@ launcher that runs the bridge when `$TMUX` is set:
 mkdir -p ~/.local/bridge-bin && cat > ~/.local/bridge-bin/claude <<'EOF'
 #!/bin/sh
 REAL="$HOME/.local/bin/claude"
-BRIDGE="$HOME/code/cc-latex/scripts/cc-tmux-bridge.py"
-if [ -n "$TMUX" ] && [ -z "$CC_TMUX_BRIDGE" ] && [ -t 1 ] && [ -f "$BRIDGE" ]; then
-  exec python3 "$BRIDGE" "$REAL" "$@"
+if [ -n "$TMUX" ] && [ -z "$CC_TMUX_BRIDGE" ] && [ -t 1 ] && command -v cc-tmux-bridge >/dev/null; then
+  exec cc-tmux-bridge "$REAL" "$@"
 fi
 exec "$REAL" "$@"
 EOF
