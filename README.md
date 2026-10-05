@@ -12,7 +12,7 @@ kitty graphics protocol. Inline `$x^2$` stays as text.
 - macOS (the mod re-saves each image with `sips`)
 - Claude Code 2.1.287+ with mods (function hooks) available
 - A terminal that supports kitty graphics: **Ghostty** or **kitty**. (WezTerm and iTerm2 may work; untested.)
-- `tectonic` and poppler (`pdftocairo`) on `PATH`: `brew install tectonic poppler`
+- [Homebrew](https://brew.sh), which the installer uses to get `tectonic` and poppler
 
 ## Install
 
@@ -26,9 +26,16 @@ Then start a new Claude Code session and ask for some math ("derive
 prompt telling Claude to write standalone equations as `$$...$$`, so you don't
 have to ask for LaTeX.
 
-`install.sh` adds this checkout to `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block
-of `~/.claude/settings.json`, so every session loads the mod. It keeps your
-other settings, and `install.sh --remove` takes it out again.
+`install.sh` does three things:
+
+- installs `tectonic` and poppler with Homebrew if they're missing;
+- has tectonic fetch its TeX bundle and the usual math fonts (20 s to a minute,
+  one time), so formulas appear at once in a session;
+- adds this checkout to `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of
+  `~/.claude/settings.json`, so every session loads the mod.
+
+It keeps your other settings, is safe to run again, and `install.sh --remove`
+takes the mod out of the settings file.
 
 To try it for one session without installing:
 
@@ -36,14 +43,9 @@ To try it for one session without installing:
 claude --plugin-dir ~/code/cc-latex/latex-render
 ```
 
-The first formula on a new machine takes about a minute: tectonic downloads
-its TeX bundle once, and until then the formula shows as dim `$$ ... $$` text.
-After that a reply's formulas take about 0.2 s. To get the download out of the
-way beforehand:
-
-```sh
-printf '\\documentclass{article}\\usepackage{amsmath,amssymb,amsfonts,xcolor}\\usepackage[active,tightpage]{preview}\\begin{document}\\begin{preview}$x$\\end{preview}\\end{document}' > /tmp/warm.tex && tectonic -o /tmp /tmp/warm.tex
-```
+A formula that needs a font tectonic hasn't fetched yet (an unusual symbol)
+shows as dim `$$ ... $$` text for a few seconds the first time, while it
+downloads.
 
 If you only see the LaTeX source, dimmed, where a formula should be, Claude
 Code's terminal probe decided images aren't supported. Skip the probe with:
