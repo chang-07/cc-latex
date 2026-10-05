@@ -18,12 +18,23 @@ kitty graphics protocol. Inline `$x^2$` stays as text.
 
 ```sh
 git clone https://github.com/chang-07/cc-latex ~/code/cc-latex
-claude --plugin-dir ~/code/cc-latex/latex-render
+~/code/cc-latex/scripts/install.sh
 ```
 
-Ask Claude for some math ("derive 2x sin x") and the formulas appear typeset.
-The mod adds a line to the system prompt telling Claude to write standalone
-equations as `$$...$$`, so you don't have to ask for LaTeX.
+Then start a new Claude Code session and ask for some math ("derive
+2x sin x"). The formulas appear typeset. The mod adds a line to the system
+prompt telling Claude to write standalone equations as `$$...$$`, so you don't
+have to ask for LaTeX.
+
+`install.sh` adds this checkout to `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block
+of `~/.claude/settings.json`, so every session loads the mod. It keeps your
+other settings, and `install.sh --remove` takes it out again.
+
+To try it for one session without installing:
+
+```sh
+claude --plugin-dir ~/code/cc-latex/latex-render
+```
 
 The first formula on a new machine takes about a minute: tectonic downloads
 its TeX bundle once, and until then the formula shows as dim `$$ ... $$` text.
@@ -38,7 +49,7 @@ If you only see the LaTeX source, dimmed, where a formula should be, Claude
 Code's terminal probe decided images aren't supported. Skip the probe with:
 
 ```sh
-CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1 claude --plugin-dir ~/code/cc-latex/latex-render
+CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1 claude
 ```
 
 ## Using tmux?
@@ -51,7 +62,7 @@ kitty's Unicode-placeholder mode under tmux, so no other change is needed.
 
 ```sh
 tmux set -g allow-passthrough all       # also put this in ~/.tmux.conf
-python3 ~/code/cc-latex/scripts/cc-tmux-bridge.py claude --plugin-dir ~/code/cc-latex/latex-render
+python3 ~/code/cc-latex/scripts/cc-tmux-bridge.py claude
 ```
 
 The bridge also answers Claude Code's image probe (no env flag needed),
