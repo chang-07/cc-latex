@@ -12,7 +12,9 @@
 # listed in that variable, are kept.
 set -eu
 
-MOD="$(cd "$(dirname "$0")/.." && pwd)/latex-render"
+# CC_LATEX_MOD overrides where the mod lives (the Homebrew formula points it at
+# a path that stays the same across upgrades).
+MOD="${CC_LATEX_MOD:-$(cd "$(dirname "$0")/.." && pwd)/latex-render}"
 SETTINGS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
 ACTION="add"
 [ "${1:-}" = "--remove" ] && ACTION="remove"
