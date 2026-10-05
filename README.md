@@ -9,6 +9,7 @@ kitty graphics protocol. Inline `$x^2$` stays as text.
 
 ## Requirements
 
+- macOS (the mod re-saves each image with `sips`)
 - Claude Code 2.1.287+ with mods (function hooks) available
 - A terminal that supports kitty graphics: **Ghostty** or **kitty**. (WezTerm and iTerm2 may work; untested.)
 - `tectonic` and poppler (`pdftocairo`) on `PATH`: `brew install tectonic poppler`
@@ -16,11 +17,22 @@ kitty graphics protocol. Inline `$x^2$` stays as text.
 ## Install
 
 ```sh
-git clone https://github.com/chang-07/cc-latex
+git clone https://github.com/chang-07/cc-latex ~/code/cc-latex
 claude --plugin-dir ~/code/cc-latex/latex-render
 ```
 
-Ask Claude something with display math and the formulas appear typeset.
+Ask Claude for some math ("derive 2x sin x") and the formulas appear typeset.
+The mod adds a line to the system prompt telling Claude to write standalone
+equations as `$$...$$`, so you don't have to ask for LaTeX.
+
+The first formula on a new machine takes about a minute: tectonic downloads
+its TeX bundle once, and until then the formula shows as dim `$$ ... $$` text.
+After that a reply's formulas take about 0.2 s. To get the download out of the
+way beforehand:
+
+```sh
+printf '\\documentclass{article}\\usepackage{amsmath,amssymb,amsfonts,xcolor}\\usepackage[active,tightpage]{preview}\\begin{document}\\begin{preview}$x$\\end{preview}\\end{document}' > /tmp/warm.tex && tectonic -o /tmp /tmp/warm.tex
+```
 
 If you only see the LaTeX source, dimmed, where a formula should be, Claude
 Code's terminal probe decided images aren't supported. Skip the probe with:
@@ -77,7 +89,8 @@ images at all.
 ## How it works
 
 `hooks/register.tsx` hooks `ui.render` for the `AssistantMessage` site. It
-splits the message text around display-math blocks (skipping code fences),
+splits the message text around display-math blocks (skipping code fences and
+inline code),
 returns the surrounding markdown as `Markdown` elements and each formula as an
 `Image`. Rendering runs in the background: a formula not yet typeset shows as
 dim `$$ ... $$` text, and when its PNG is ready the hook calls
@@ -95,7 +108,7 @@ Constants at the top of `hooks/register.tsx`:
 | `PT_PER_ROW` | `8` | Points of typeset height per terminal row. Lower = bigger. |
 | `CELL_ASPECT` | `2.1` | Cell height / width of your terminal font, used when the bridge hasn't measured it. |
 | `TEXT_COLOR` | `white` | Formula colour; use `black` on a light theme. |
-| `DPI` | `600` | Rasterisation resolution; keep high, the picture is scaled to its cell box. |
+| `DPI` | `400` | Rasterisation resolution; the picture is scaled to its cell box, and the terminal holds every formula decoded, so higher costs memory. |
 
 ## Development
 
