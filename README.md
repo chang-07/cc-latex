@@ -12,13 +12,15 @@ kitty graphics protocol. Inline `$x^2$` stays as text.
 - macOS (the mod re-saves each image with `sips`)
 - Claude Code 2.1.287+ with mods (function hooks) available
 - A terminal that supports kitty graphics: **Ghostty** or **kitty**. (WezTerm and iTerm2 may work; untested.)
-- [Homebrew](https://brew.sh), which the installer uses to get `tectonic` and poppler
+- [Homebrew](https://brew.sh)
 
 ## Install
 
 ```sh
-git clone https://github.com/chang-07/cc-latex ~/code/cc-latex
-~/code/cc-latex/scripts/install.sh
+brew tap chang-07/cc-latex https://github.com/chang-07/cc-latex
+brew trust chang-07/cc-latex    # Homebrew 6 and later; skip if `brew trust` doesn't exist
+brew install cc-latex
+cc-latex install
 ```
 
 Then start a new Claude Code session and ask for some math ("derive
@@ -26,16 +28,29 @@ Then start a new Claude Code session and ask for some math ("derive
 prompt telling Claude to write standalone equations as `$$...$$`, so you don't
 have to ask for LaTeX.
 
-`install.sh` does three things:
+`brew install` brings `tectonic` and poppler with it. `cc-latex install` then
+does two things:
 
-- installs `tectonic` and poppler with Homebrew if they're missing;
 - has tectonic fetch its TeX bundle and the usual math fonts (20 s to a minute,
   one time), so formulas appear at once in a session;
-- adds this checkout to `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of
-  `~/.claude/settings.json`, so every session loads the mod.
+- adds the mod to `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of
+  `~/.claude/settings.json`, so every session loads it.
 
-It keeps your other settings, is safe to run again, and `install.sh --remove`
-takes the mod out of the settings file.
+It keeps your other settings and is safe to run again. `cc-latex remove` takes
+the mod out of the settings file; run it before `brew uninstall cc-latex`.
+
+### From a checkout
+
+To work on the mod, or without the tap:
+
+```sh
+git clone https://github.com/chang-07/cc-latex ~/code/cc-latex
+~/code/cc-latex/scripts/install.sh
+```
+
+`install.sh` is what `cc-latex install` runs; from a checkout it also installs
+`tectonic` and poppler with Homebrew if they're missing, and
+`install.sh --remove` undoes it.
 
 To try it for one session without installing:
 
@@ -64,7 +79,7 @@ kitty's Unicode-placeholder mode under tmux, so no other change is needed.
 
 ```sh
 tmux set -g allow-passthrough all       # also put this in ~/.tmux.conf
-python3 ~/code/cc-latex/scripts/cc-tmux-bridge.py claude
+cc-tmux-bridge claude                   # from a checkout: python3 ~/code/cc-latex/scripts/cc-tmux-bridge.py claude
 ```
 
 The bridge also answers Claude Code's image probe (no env flag needed),
