@@ -55,3 +55,12 @@ test('math inside a code fence is not touched', async ($, on) => {
   expect(JSON.stringify(await ui.drawn()).includes('$$not math$$')).toBe(true)
   expect(await ui.find({ type: 'Image' })).toBe(undefined)
 })
+
+test('the system prompt says how to write math', async ($, on) => {
+  on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'base', scope: 'shared' }] }))
+  const composed = await $.prompt.compose({ model: 'm', promptModel: 'm', surfaces: ['terminal'], tools: [], outputStyle: null, traits: [] })
+  const ours = composed.sections.find(s => s.id === 'latex-render:math')
+  expect(ours?.scope).toBe('session')
+  expect(ours?.text.includes('$$')).toBe(true)
+  expect(composed.sections[0]?.id).toBe('intro')
+})

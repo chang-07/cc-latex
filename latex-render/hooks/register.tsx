@@ -212,7 +212,23 @@ function cells(r: Rendered, maxColumns: number, aspectRatio: number): { columns:
   return { columns: Math.min(columns, 255), rows: Math.min(rows, 255) }
 }
 
+// The model avoids LaTeX in a terminal unless told it will be drawn, and then
+// this mod has nothing to render. One system-prompt section says how to write
+// math here.
+const GUIDANCE =
+  'This terminal typesets display math. Write any standalone equation or formula as display LaTeX ' +
+  'between `$$` and `$$` on its own lines (amsmath and amssymb are available); it is drawn as a typeset image. ' +
+  'Inline `$...$` is not rendered, so keep short inline expressions as plain Unicode text (x², ∑, √, π). ' +
+  'Never put display math inside a code block or backticks, where it stays as source.'
+
 export const register: Register = on => {
+  on('prompt.compose', async ($, e, next) => {
+    const composed = await next(e)
+    // Only the terminal draws the pictures.
+    if (!e.surfaces.includes('terminal')) return composed
+    return { sections: [...composed.sections, { id: 'latex-render:math', text: GUIDANCE, scope: 'session' }] }
+  })
+
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     if (e.surface !== 'terminal') return next(e)
     const pieces = split(e.props.text)
